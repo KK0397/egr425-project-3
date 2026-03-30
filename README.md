@@ -16,6 +16,7 @@
 > - Gets points added every other second.
 > - Can spend points to sabotage.
 > - Wins if player's points reaches zero *or* the saboteur gains enough points themselves.
+> - Simon Says-style game to gain points faster at risk of losing some to failure
 
 > ##### **Mobile Device** 📱
 >
