@@ -37,6 +37,18 @@ class GameState {
     _playerPoints += GameConstants.pointsPerSlice;
     if (_playerPoints >= GameConstants.pointsToWin) {
       _status = GameStatus.won;
+      BleManager.instance.sendWin(); // ← add this
+    }
+    _notify();
+  }
+
+  /// Called when the player accidentally slices a bomb.
+  void onBombSliced() {
+    if (_status != GameStatus.playing) return;
+    _playerPoints -= GameConstants.bombPenalty; // add this constant
+    if (_playerPoints <= 0) {
+      _playerPoints = 0;
+      _status = GameStatus.lost;
     }
     _notify();
   }
@@ -72,10 +84,18 @@ class GameState {
 
   /// Handle an incoming sabotage command from the M5Core2.
   /// Returns the command only if the saboteur is NOT frozen.
+
   SabotageCommand? receiveSabotage(SabotageCommand cmd) {
-    if (_saboteurFrozen) return null; // ignore while frozen
+    if (_saboteurFrozen) return null;
     if (_status != GameStatus.playing) return null;
-    // The Flame game component will react to the returned command.
+
+    // Saboteur win ends the game immediately
+    if (cmd == SabotageCommand.saboteurWin) {
+      _status = GameStatus.lost;
+      _notify();
+      return null; // no visual effect needed, HUD will react
+    }
+
     return cmd;
   }
 

@@ -32,6 +32,7 @@ class _MenuScreenState extends State<MenuScreen> {
     } catch (e) {
       setState(() {
         _statusMessage = 'Connection failed: $e';
+        print(e);
       });
     } finally {
       setState(() => _connecting = false);
@@ -142,11 +143,11 @@ class _MenuScreenState extends State<MenuScreen> {
                   foregroundColor: Colors.black,
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12)),
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 40, vertical: 16),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 40, vertical: 16),
                 ),
-                //onPressed: _connected ? _startGame : null,
-                onPressed: _startGame,
+                onPressed: _connected ? _startGame : null,
+                // onPressed: _startGame,
                 child: const Text(
                   'START GAME',
                   style: TextStyle(

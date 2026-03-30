@@ -2,6 +2,7 @@ import 'dart:ui';
 import 'package:flame/components.dart';
 import 'package:flame/events.dart';
 import 'package:flutter/material.dart' hide Image;
+import 'package:proj3_fixed/game/sabotage_handler.dart';
 import '../constants/constants.dart';
 import 'fruit_component.dart';
 import 'fruit_assassin_game.dart';
@@ -10,7 +11,6 @@ import 'fruit_assassin_game.dart';
 /// When a drag path crosses a [FruitComponent], that fruit is sliced.
 class SliceDetector extends PositionComponent
     with HasGameRef<FruitAssassinGame>, DragCallbacks {
-
   // The last recorded pointer position during a drag
   Vector2? _lastDragPos;
 
@@ -78,12 +78,25 @@ class SliceDetector extends PositionComponent
 
   /// Tests whether the line segment [from]→[to] intersects any fruit.
   void _checkSlice(Vector2 from, Vector2 to) {
+    // Check fruits
     final fruits = gameRef.children.whereType<FruitComponent>().toList();
     for (final fruit in fruits) {
       if (fruit.sliced) continue;
-      final center = fruit.position; // already in world/game coords
-      if (_segmentIntersectsCircle(from, to, center, GameConstants.fruitRadius)) {
+      final center = fruit.position;
+      if (_segmentIntersectsCircle(
+          from, to, center, GameConstants.fruitRadius)) {
         fruit.slice();
+      }
+    }
+
+    // Check bombs
+    final bombs = gameRef.children.whereType<BombComponent>().toList();
+    for (final bomb in bombs) {
+      if (bomb.triggered) continue;
+      final center = bomb.position;
+      if (_segmentIntersectsCircle(
+          from, to, center, GameConstants.fruitRadius)) {
+        bomb.trigger();
       }
     }
   }

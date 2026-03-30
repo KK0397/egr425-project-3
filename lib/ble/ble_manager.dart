@@ -1,85 +1,97 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 
-/// ============================================================
-///  BLE SERVICE UUIDs — must match your M5Core2 firmware
-/// ============================================================
-// TODO: Replace these with the actual UUIDs from your M5Core2 code.
-const String kServiceUUID        = '0000XXXX-0000-1000-8000-00805F9B34FB';
-const String kSabotageCharUUID   = '0000YYYY-0000-1000-8000-00805F9B34FB'; // M5 → Flutter (notify)
-const String kFreezeCharUUID     = '0000ZZZZ-0000-1000-8000-00805F9B34FB'; // Flutter → M5 (write)
+// ── UUIDs: copied exactly from your M5Core2 firmware ──────────
+const String kServiceUUID = '12345678-1234-1234-1234-123456789abc';
+const String kMainCharUUID = 'abcd1234-5678-1234-5678-123456789abc';
+// The M5 uses ONE characteristic for notify + write, so both point here.
 
-/// Names the M5Core2 advertises — adjust to match your firmware.
-const String kM5DeviceName = 'M5Core2_Saboteur'; // TODO: match your BLE device name
+const String kM5DeviceName = 'Fruit Assassin'; // matches BLEDevice::init()
 
-/// ============================================================
-///  Sabotage command types sent by the M5Core2
-/// ============================================================
 enum SabotageCommand {
   unknown,
-
-  // TODO: Add every command your M5Core2 can send and map them
-  // in the _parseCommand() method below. Examples are provided
-  // to illustrate the pattern — replace or extend as needed.
-  spawnBomb,     // example: spawns an on-screen bomb the player must avoid
-  slowSlicing,   // example: temporarily slows the player's slice detection window
-  invertControls,// example: flips swipe direction
+  spawnBomb,
+  blind,
+  saboteurWin,
+  // Add more as you wire them up on the M5 side
 }
 
-/// ============================================================
-///  BLE Manager
-/// ============================================================
 class BleManager {
   BleManager._();
   static final BleManager instance = BleManager._();
 
   BluetoothDevice? _device;
-  BluetoothCharacteristic? _sabotageChar;
-  BluetoothCharacteristic? _freezeChar;
+  BluetoothCharacteristic? _mainChar; // single char for both RX and TX
 
   final StreamController<SabotageCommand> _sabotageController =
       StreamController<SabotageCommand>.broadcast();
 
-  /// Stream of sabotage commands received from the M5Core2.
   Stream<SabotageCommand> get sabotageStream => _sabotageController.stream;
 
   bool _connected = false;
   bool get isConnected => _connected;
 
-  // ── Scanning ────────────────────────────────────────────────
+  // ── Scanning ───────────────────────────────────────────────
 
-  /// Scan for the M5Core2 and connect automatically when found.
+  bool _connecting = false; // add this as a class field in BleManager
+
   Future<void> scanAndConnect() async {
-    await FlutterBluePlus.startScan(
-      withServices: [Guid(kServiceUUID)],
-      timeout: const Duration(seconds: 15),
-    );
+    final statuses = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+    ].request();
 
-    FlutterBluePlus.scanResults.listen((results) async {
+    final allGranted = statuses.values.every((s) => s.isGranted);
+    if (!allGranted) throw Exception('Bluetooth permissions denied');
+
+    if (await FlutterBluePlus.adapterState.first != BluetoothAdapterState.on) {
+      throw Exception('Bluetooth is not enabled');
+    }
+
+    final completer = Completer<void>();
+
+    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 15));
+
+    final sub = FlutterBluePlus.scanResults.listen((results) async {
+      if (completer.isCompleted) return; // guard against duplicate fires
       for (ScanResult r in results) {
-        if (r.device.platformName == kM5DeviceName || 
-            r.advertisementData.serviceUuids
-                .contains(Guid(kServiceUUID))) {
+        print('Found device: ${r.device.platformName}');
+        if (r.device.platformName == kM5DeviceName) {
           await FlutterBluePlus.stopScan();
           await _connectToDevice(r.device);
-          break;
+          completer.complete();
+          return;
         }
       }
     });
+
+    // Timeout fallback — fires after 15s if nothing connected
+    Future.delayed(const Duration(seconds: 16), () {
+      if (!completer.isCompleted) {
+        completer.completeError(
+            Exception('Device not found — is M5Core2 on and advertising?'));
+      }
+    });
+
+    try {
+      await completer.future;
+    } finally {
+      await sub.cancel();
+    }
   }
 
-  // ── Connection ──────────────────────────────────────────────
+  // ── Connection ─────────────────────────────────────────────
 
   Future<void> _connectToDevice(BluetoothDevice device) async {
     _device = device;
-    await device.connect(autoConnect: false);
+    await device.connect(autoConnect: false, license: License.free);
     _connected = true;
 
     device.connectionState.listen((state) {
       if (state == BluetoothConnectionState.disconnected) {
         _connected = false;
-        // Optionally attempt reconnect here
       }
     });
 
@@ -91,66 +103,64 @@ class BleManager {
     for (BluetoothService service in services) {
       if (service.serviceUuid == Guid(kServiceUUID)) {
         for (BluetoothCharacteristic char in service.characteristics) {
-          if (char.characteristicUuid == Guid(kSabotageCharUUID)) {
-            _sabotageChar = char;
-            await _subscribeToSabotage(char);
-          }
-          if (char.characteristicUuid == Guid(kFreezeCharUUID)) {
-            _freezeChar = char;
+          if (char.characteristicUuid == Guid(kMainCharUUID)) {
+            _mainChar = char;
+            await _subscribeToCommands(char);
           }
         }
       }
     }
   }
 
-  // ── Receiving sabotage commands ─────────────────────────────
+  // ── Receiving commands from M5 ─────────────────────────────
 
-  Future<void> _subscribeToSabotage(BluetoothCharacteristic char) async {
+  Future<void> _subscribeToCommands(BluetoothCharacteristic char) async {
     await char.setNotifyValue(true);
     char.lastValueStream.listen((value) {
       if (value.isEmpty) return;
       final raw = utf8.decode(value);
       final cmd = _parseCommand(raw);
-      _sabotageController.add(cmd);
+      if (cmd != SabotageCommand.unknown) {
+        _sabotageController.add(cmd);
+      }
     });
   }
 
-  /// Maps the raw string sent by the M5Core2 to a [SabotageCommand].
-  ///
-  /// TODO: Update the case strings to match exactly what your
-  /// M5Core2 firmware writes over BLE. The examples below are
-  /// illustrative — replace or extend them freely.
   SabotageCommand _parseCommand(String raw) {
-    final trimmed = raw.trim().toLowerCase();
-    switch (trimmed) {
-      case 'spawn_bomb':      return SabotageCommand.spawnBomb;
-      case 'slow_slicing':    return SabotageCommand.slowSlicing;
-      case 'invert_controls': return SabotageCommand.invertControls;
-      // TODO: add more cases matching your M5 firmware commands
-      default:                return SabotageCommand.unknown;
+    switch (raw.trim().toUpperCase()) {
+      // These strings must match exactly what your M5 firmware
+      // passes to pCharacteristic->setValue() / notify()
+      case 'BOMB':
+        return SabotageCommand.spawnBomb;
+      case 'BLIND':
+        return SabotageCommand.blind;
+      case 'SABOTEUR_WIN':
+        return SabotageCommand.saboteurWin;
+      default:
+        return SabotageCommand.unknown;
     }
   }
 
-  // ── Sending freeze to M5Core2 ───────────────────────────────
+  // ── Sending freeze to M5 ───────────────────────────────────
 
-  /// Writes a "freeze" notification to the M5Core2 over BLE.
-  ///
-  /// TODO: Adjust the payload string/bytes to match what your
-  /// M5Core2 firmware expects when it receives the freeze command.
   Future<void> sendFreeze() async {
-    if (_freezeChar == null) return;
-    final payload = utf8.encode('freeze'); // TODO: match your M5 protocol
-    await _freezeChar!.write(payload, withoutResponse: false);
+    if (_mainChar == null) return;
+    // M5 checks:  if (value == "FREEZE")  — must be uppercase
+    await _mainChar!.write(utf8.encode('FREEZE'), withoutResponse: false);
   }
 
-  /// Writes an "unfreeze" notification so the M5 knows freeze ended.
   Future<void> sendUnfreeze() async {
-    if (_freezeChar == null) return;
-    final payload = utf8.encode('unfreeze'); // TODO: match your M5 protocol
-    await _freezeChar!.write(payload, withoutResponse: false);
+    if (_mainChar == null) return;
+    await _mainChar!.write(utf8.encode('UNFREEZE'), withoutResponse: false);
   }
 
-  // ── Cleanup ─────────────────────────────────────────────────
+  //  Sending win to M5
+  Future<void> sendWin() async {
+    if (_mainChar == null) return;
+    await _mainChar!.write(utf8.encode('WIN'), withoutResponse: false);
+  }
+
+  // ── Cleanup ────────────────────────────────────────────────
 
   Future<void> disconnect() async {
     await _device?.disconnect();

@@ -1,6 +1,7 @@
 /// ============================================================
 ///  GAME CONSTANTS — fill in your tuning values here
 /// ============================================================
+library;
 
 class GameConstants {
   // ── Points ───────────────────────────────────────────────
@@ -39,4 +40,8 @@ class GameConstants {
 
   /// Radius used for hit/slice collision on each fruit (logical pixels).
   static const double fruitRadius = 40.0;
+
+  static const int bombPenalty = 15;
+  static const double blindDurationSeconds =
+      4.0; // matches BlindOverlay._duration
 }
